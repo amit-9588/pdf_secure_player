@@ -1,0 +1,28 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: secure-pdf-player
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 200MB
+
+securepdf:
+  # Where per-book artifacts (original.pdf, key.bin, page-N.enc, manifest.json) live.
+  storage-dir: ${SECUREPDF_STORAGE:./data/books}
+  # Rasterisation quality. 96=screen, 120=comfortable, 200=crisp for Retina/full-screen.
+  render-dpi: ${SECUREPDF_DPI:200}
+  # Rendered page image format. png works out of the box with ImageIO.
+  image-format: png
+  # Bearer token gating /api/v1/books/**. Replace with real JWT auth in prod.
+  auth-token: ${SECUREPDF_TOKEN:demo-secret-token}
+  # Converters for non-PDF uploads.
+  chrome-binary: ${SECUREPDF_CHROME:/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
+  soffice-binary: ${SECUREPDF_SOFFICE:soffice}
+  conversion-timeout-seconds: ${SECUREPDF_CONVERT_TIMEOUT:60}
+
+logging:
+  level:
+    in.oneeq.securepdf: DEBUG
