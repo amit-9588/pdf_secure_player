@@ -90,6 +90,16 @@ async function openBook(bookId) {
     state.pages = manifest.pages;
     state.manifest = manifest;
 
+    if (manifest.processingMode === "BYTE_RANGE" || !manifest.processingMode) {
+      const binRes = await api(`/api/v1/books/${bookId}/manifest.bin`);
+      const buffer = await binRes.arrayBuffer();
+      const view = new DataView(buffer);
+      state.pageSizes = new Uint32Array(manifest.pages);
+      for (let i = 0; i < manifest.pages; i++) {
+        state.pageSizes[i] = view.getUint32(i * 4, true); // true = little-endian
+      }
+    }
+
     const keyInfo = (await (await api(`/api/v1/books/${bookId}/key`)).json()).data;
     const rawKey = base64ToBytes(keyInfo.key);
     state.cryptoKey = await crypto.subtle.importKey(
@@ -154,9 +164,18 @@ async function getPage(pageNumber) {
       return state.cache.get(pageNumber);
 
     } else if (mode === "BYTE_RANGE") {
-      // Byte Range: Sliding window fetch over book.dat
-      const rangeStr = state.manifest.byteRanges[pageNumber];
-      if (!rangeStr) throw new Error("No byte range for page " + pageNumber);
+      // Byte Range: Sliding window fetch over book.dat using Binary Manifest sizes
+      if (!state.pageSizes || state.pageSizes.length < pageNumber) {
+         throw new Error("Invalid binary manifest for page " + pageNumber);
+      }
+      
+      let start = 0;
+      for (let i = 0; i < pageNumber - 1; i++) {
+        start += state.pageSizes[i];
+      }
+      let end = start + state.pageSizes[pageNumber - 1] - 1;
+      
+      const rangeStr = `${start}-${end}`;
       
       const res = await api(`/api/v1/books/${state.bookId}/book.dat`, {
         headers: { "Range": `bytes=${rangeStr}` }

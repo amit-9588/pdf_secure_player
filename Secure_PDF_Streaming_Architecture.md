@@ -227,3 +227,20 @@ If you want to grant a user offline access to a book:
 1. The client requests the entire `book.dat` without the `Range` header and saves the large file locally (e.g., in IndexedDB).
 2. The client also saves the `manifest.json` and the AES key locally.
 3. When the user reads offline, the JavaScript viewer uses `Blob.slice(start, end)` on the locally stored `book.dat` file to extract the exact encrypted bytes for the current page, decrypting and rendering them exactly as it would over the network.
+
+## 12. Manifest Optimization & Security (Binary Manifests)
+
+When creating a massive single file (`book.dat`), the manifest must tell the client where each page starts and ends. However, serving a huge JSON dictionary for thousands of pages bloats the manifest size and delays the book's initial load time.
+
+**The Solution: Binary Manifests**
+Instead of sending a heavy JSON `manifest.json` map like `{"1": "0-45000"}`, we strip the byte ranges out of the JSON entirely. We generate a separate binary file called `manifest.bin`. 
+
+This binary file contains nothing but a raw array of 32-bit integers (`Uint32`), representing the **size** of each page:
+- Bytes 0-3: Size of Page 1
+- Bytes 4-7: Size of Page 2
+
+**Security Benefits:**
+1. **Unreadable Payload:** An attacker opening the Network tab sees absolute garbage instead of a clean JSON map.
+2. **Reverse Engineering Friction:** Standard scrapers (like Python `requests` or `curl`) will choke on it. The attacker is forced to dig into your minified JavaScript, figure out how you unpack the `DataView` or `Uint32Array`, and calculate the byte offsets manually.
+
+The JavaScript viewer downloads `manifest.bin`, parses the array in microseconds, and mathematically reconstructs the byte boundaries (`start = previous_sizes_sum`, `end = start + current_size`) before making the `Range` request.

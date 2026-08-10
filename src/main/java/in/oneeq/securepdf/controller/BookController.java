@@ -70,6 +70,24 @@ public class BookController {
         return ResponseEntity.ok(ok(manifest));
     }
 
+    /** 4b. Binary Manifest — raw Uint32 array of page sizes (BYTE_RANGE mode). */
+    @GetMapping("/{bookId}/manifest.bin")
+    public ResponseEntity<byte[]> manifestBin(@PathVariable String bookId) {
+        requireReady(bookId);
+        Path path = storage.manifestBinFile(bookId);
+        if (!Files.exists(path)) {
+            throw notFound();
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(bytes);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Read failed", e);
+        }
+    }
+
     /** 5. A single encrypted page: IV || ciphertext || tag. */
     @GetMapping("/{bookId}/pages/{pageNumber}")
     public ResponseEntity<byte[]> page(@PathVariable String bookId,

@@ -101,25 +101,28 @@ public class PdfProcessingService {
                         chunkMap.put(chunkName, pagesInChunk);
                     }
                 } else if ("BYTE_RANGE".equalsIgnoreCase(mode) || mode == null) {
-                    // [NEW LOGIC: DYNAMIC CHUNKING (HTTP RANGE)]
-                    // Encrypt each page independently but concatenate them into a single file (book.dat).
-                    // The client uses HTTP Range headers to fetch exact bytes (sliding window).
+                    // [NEW LOGIC: BINARY MANIFEST DYNAMIC CHUNKING (HTTP RANGE)]
+                    // Encrypt each page independently and concatenate them into book.dat.
+                    // We write the SIZE of each page to manifest.bin as a 32-bit integer (Little Endian).
                     mode = "BYTE_RANGE";
                     java.io.ByteArrayOutputStream datStream = new java.io.ByteArrayOutputStream();
-                    int currentOffset = 0;
+                    java.nio.ByteBuffer binMap = java.nio.ByteBuffer.allocate(pageCount * 4);
+                    binMap.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                    
                     for (int i = 0; i < pageCount; i++) {
-                        int pageNumber = i + 1;
                         BufferedImage image = renderer.renderImageWithDPI(i, props.getRenderDpi(), ImageType.RGB);
                         byte[] rendered = toBytes(image, props.getImageFormat());
                         byte[] encrypted = crypto.encrypt(key, rendered);
                         
                         datStream.write(encrypted);
-                        int endOffset = currentOffset + encrypted.length - 1;
-                        byteRanges.put(pageNumber, currentOffset + "-" + endOffset);
-                        currentOffset += encrypted.length;
+                        binMap.putInt(encrypted.length);
                     }
                     java.nio.file.Files.write(storage.bookDatFile(bookId), datStream.toByteArray());
+                    java.nio.file.Files.write(storage.manifestBinFile(bookId), binMap.array());
+                    
                     files.add("book.dat");
+                    files.add("manifest.bin");
+                    byteRanges.clear(); // We don't populate JSON byte ranges anymore.
                 }
             }
 

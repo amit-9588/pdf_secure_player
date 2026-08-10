@@ -72,6 +72,10 @@ public class StorageService {
         return bookDir(bookId).resolve("manifest.json");
     }
 
+    public Path manifestBinFile(String bookId) {
+        return bookDir(bookId).resolve("manifest.bin");
+    }
+
     public Path statusFile(String bookId) {
         return bookDir(bookId).resolve("status");
     }
