@@ -88,6 +88,7 @@ async function openBook(bookId) {
 
     const manifest = (await (await api(`/api/v1/books/${bookId}/manifest`)).json()).data;
     state.pages = manifest.pages;
+    state.manifest = manifest;
 
     const keyInfo = (await (await api(`/api/v1/books/${bookId}/key`)).json()).data;
     const rawKey = base64ToBytes(keyInfo.key);
@@ -96,7 +97,7 @@ async function openBook(bookId) {
     );
 
     state.current = 1;
-    msg(`Loaded "${manifest.title}" — ${manifest.pages} pages.`);
+    msg(`Loaded "${manifest.title}" — ${manifest.pages} pages. (Mode: ${manifest.processingMode || 'SINGLE_PAGE'})`);
     await showPage(1);
   } catch (e) {
     msg("Open failed: " + e.message, true);
@@ -105,26 +106,82 @@ async function openBook(bookId) {
 
 // --- page fetch + decrypt --------------------------------------------------
 
+const inflightChunks = new Map(); // For BATCHED mode dedup
+
 async function getPage(pageNumber) {
   if (pageNumber < 1 || pageNumber > state.pages) return null;
   if (state.cache.has(pageNumber)) return state.cache.get(pageNumber);
   if (state.inflight.has(pageNumber)) return state.inflight.get(pageNumber);
 
   const promise = (async () => {
-    const res = await api(`/api/v1/books/${state.bookId}/pages/${pageNumber}`);
-    const blob = new Uint8Array(await res.arrayBuffer());
+    const mode = state.manifest.processingMode || "SINGLE_PAGE";
 
-    // Wire format: IV(12) || ciphertext || GCM tag(16)
-    const iv = blob.slice(0, 12);
-    const ciphertext = blob.slice(12);
+    if (mode === "BATCHED") {
+      // Find which chunk contains this page
+      let targetChunk = null;
+      for (const [chunkName, pages] of Object.entries(state.manifest.chunkMap)) {
+        if (pages.includes(pageNumber)) { targetChunk = chunkName; break; }
+      }
+      if (!targetChunk) throw new Error("Page not found in any chunk");
 
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv }, state.cryptoKey, ciphertext
-    );
+      // Deduplicate chunk fetches
+      if (!inflightChunks.has(targetChunk)) {
+        const chunkPromise = (async () => {
+          const res = await api(`/api/v1/books/${state.bookId}/chunks/${targetChunk}`);
+          const blob = new Uint8Array(await res.arrayBuffer());
+          const iv = blob.slice(0, 12);
+          const ciphertext = blob.slice(12);
+          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.cryptoKey, ciphertext);
+          
+          // plain is JSON: { "1": "base64...", "2": "base64..." }
+          const text = new TextDecoder().decode(plain);
+          const chunkData = JSON.parse(text);
+          
+          // Cache all pages from this chunk
+          for (const [pStr, b64] of Object.entries(chunkData)) {
+            const pNum = parseInt(pStr);
+            const imgBytes = base64ToBytes(b64);
+            const bitmap = await createImageBitmap(new Blob([imgBytes]));
+            state.cache.set(pNum, bitmap);
+          }
+        })();
+        inflightChunks.set(targetChunk, chunkPromise);
+        await chunkPromise;
+        inflightChunks.delete(targetChunk);
+      } else {
+        await inflightChunks.get(targetChunk);
+      }
+      return state.cache.get(pageNumber);
 
-    const bitmap = await createImageBitmap(new Blob([plain]));
-    state.cache.set(pageNumber, bitmap);
-    return bitmap;
+    } else if (mode === "BYTE_RANGE") {
+      // Byte Range: Sliding window fetch over book.dat
+      const rangeStr = state.manifest.byteRanges[pageNumber];
+      if (!rangeStr) throw new Error("No byte range for page " + pageNumber);
+      
+      const res = await api(`/api/v1/books/${state.bookId}/book.dat`, {
+        headers: { "Range": `bytes=${rangeStr}` }
+      });
+      const blob = new Uint8Array(await res.arrayBuffer());
+      const iv = blob.slice(0, 12);
+      const ciphertext = blob.slice(12);
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.cryptoKey, ciphertext);
+      
+      const bitmap = await createImageBitmap(new Blob([plain]));
+      state.cache.set(pageNumber, bitmap);
+      return bitmap;
+
+    } else {
+      // SINGLE_PAGE mode (Existing)
+      const res = await api(`/api/v1/books/${state.bookId}/pages/${pageNumber}`);
+      const blob = new Uint8Array(await res.arrayBuffer());
+      const iv = blob.slice(0, 12);
+      const ciphertext = blob.slice(12);
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.cryptoKey, ciphertext);
+      
+      const bitmap = await createImageBitmap(new Blob([plain]));
+      state.cache.set(pageNumber, bitmap);
+      return bitmap;
+    }
   })();
 
   state.inflight.set(pageNumber, promise);

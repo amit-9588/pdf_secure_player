@@ -88,6 +88,14 @@ public class StorageService {
         return bookDir(bookId).resolve(pageFileName(pageNumber));
     }
 
+    public Path chunkFile(String bookId, String chunkName) {
+        return bookDir(bookId).resolve(chunkName);
+    }
+
+    public Path bookDatFile(String bookId) {
+        return bookDir(bookId).resolve("book.dat");
+    }
+
     public boolean exists(String bookId) {
         return Files.isDirectory(bookDir(bookId));
     }

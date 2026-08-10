@@ -20,6 +20,17 @@ public class SecurePdfProperties {
     /** Image format for rendered pages (png is natively supported by ImageIO). */
     private String imageFormat = "png";
 
+    /** 
+     * Streaming architecture mode:
+     * SINGLE_PAGE: 1 file per page
+     * BATCHED: grouping pages into chunks
+     * BYTE_RANGE: single file, byte-range fetching
+     */
+    private String processingMode = "BYTE_RANGE";
+
+    /** Number of pages per chunk in BATCHED mode */
+    private int batchSize = 5;
+
     /**
      * Static bearer token gating the /api/v1/books/** endpoints. This is the
      * seam where a real deployment would plug in PoshDesk-style JWT auth and
@@ -90,5 +101,21 @@ public class SecurePdfProperties {
 
     public void setConversionTimeoutSeconds(int conversionTimeoutSeconds) {
         this.conversionTimeoutSeconds = conversionTimeoutSeconds;
+    }
+
+    public String getProcessingMode() {
+        return processingMode;
+    }
+
+    public void setProcessingMode(String processingMode) {
+        this.processingMode = processingMode;
+    }
+
+    public int getBatchSize() {
+        return batchSize;
+    }
+
+    public void setBatchSize(int batchSize) {
+        this.batchSize = batchSize;
     }
 }

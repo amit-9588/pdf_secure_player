@@ -53,31 +53,77 @@ public class PdfProcessingService {
             SecretKey key = crypto.generateKey();
             storage.writeKey(bookId, key.getEncoded());
 
+            String mode = props.getProcessingMode();
             List<String> files = new ArrayList<>();
+            java.util.Map<String, java.util.List<Integer>> chunkMap = new java.util.HashMap<>();
+            java.util.Map<Integer, String> byteRanges = new java.util.HashMap<>();
             int pageCount;
 
             try (PDDocument document = Loader.loadPDF(storage.originalPdf(bookId).toFile())) {
                 pageCount = document.getNumberOfPages();
                 PDFRenderer renderer = new PDFRenderer(document);
 
-                for (int i = 0; i < pageCount; i++) {
-                    int pageNumber = i + 1;
-
-                    BufferedImage image = renderer.renderImageWithDPI(
-                            i, props.getRenderDpi(), ImageType.RGB);
-
-                    byte[] rendered = toBytes(image, props.getImageFormat());
-                    byte[] encrypted = crypto.encrypt(key, rendered);
-
-                    java.nio.file.Files.write(storage.pageFile(bookId, pageNumber), encrypted);
-                    files.add(storage.pageFileName(pageNumber));
-
-                    log.debug("Book {} page {}/{} -> {} bytes encrypted",
-                            bookId, pageNumber, pageCount, encrypted.length);
+                if ("SINGLE_PAGE".equalsIgnoreCase(mode)) {
+                    // [EXISTING LOGIC] 1 request = 1 page.
+                    for (int i = 0; i < pageCount; i++) {
+                        int pageNumber = i + 1;
+                        BufferedImage image = renderer.renderImageWithDPI(i, props.getRenderDpi(), ImageType.RGB);
+                        byte[] rendered = toBytes(image, props.getImageFormat());
+                        byte[] encrypted = crypto.encrypt(key, rendered);
+                        java.nio.file.Files.write(storage.pageFile(bookId, pageNumber), encrypted);
+                        files.add(storage.pageFileName(pageNumber));
+                    }
+                } else if ("BATCHED".equalsIgnoreCase(mode)) {
+                    // [NEW LOGIC: STATIC CHUNKING]
+                    // Group multiple pages into a single chunk file (JSON map of base64 images)
+                    // This reduces CDN request costs at the expense of slightly higher latency for random access.
+                    int batchSize = props.getBatchSize();
+                    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    for (int i = 0; i < pageCount; i += batchSize) {
+                        int startPage = i + 1;
+                        int endPage = Math.min(startPage + batchSize - 1, pageCount);
+                        String chunkName = "chunk-" + startPage + "-" + endPage + ".enc";
+                        java.util.Map<String, String> chunkData = new java.util.HashMap<>();
+                        java.util.List<Integer> pagesInChunk = new java.util.ArrayList<>();
+                        
+                        for (int p = startPage; p <= endPage; p++) {
+                            BufferedImage image = renderer.renderImageWithDPI(p - 1, props.getRenderDpi(), ImageType.RGB);
+                            byte[] rendered = toBytes(image, props.getImageFormat());
+                            chunkData.put(String.valueOf(p), java.util.Base64.getEncoder().encodeToString(rendered));
+                            pagesInChunk.add(p);
+                        }
+                        
+                        byte[] chunkJsonBytes = mapper.writeValueAsBytes(chunkData);
+                        byte[] encrypted = crypto.encrypt(key, chunkJsonBytes);
+                        java.nio.file.Files.write(storage.chunkFile(bookId, chunkName), encrypted);
+                        
+                        files.add(chunkName);
+                        chunkMap.put(chunkName, pagesInChunk);
+                    }
+                } else if ("BYTE_RANGE".equalsIgnoreCase(mode) || mode == null) {
+                    // [NEW LOGIC: DYNAMIC CHUNKING (HTTP RANGE)]
+                    // Encrypt each page independently but concatenate them into a single file (book.dat).
+                    // The client uses HTTP Range headers to fetch exact bytes (sliding window).
+                    mode = "BYTE_RANGE";
+                    java.io.ByteArrayOutputStream datStream = new java.io.ByteArrayOutputStream();
+                    int currentOffset = 0;
+                    for (int i = 0; i < pageCount; i++) {
+                        int pageNumber = i + 1;
+                        BufferedImage image = renderer.renderImageWithDPI(i, props.getRenderDpi(), ImageType.RGB);
+                        byte[] rendered = toBytes(image, props.getImageFormat());
+                        byte[] encrypted = crypto.encrypt(key, rendered);
+                        
+                        datStream.write(encrypted);
+                        int endOffset = currentOffset + encrypted.length - 1;
+                        byteRanges.put(pageNumber, currentOffset + "-" + endOffset);
+                        currentOffset += encrypted.length;
+                    }
+                    java.nio.file.Files.write(storage.bookDatFile(bookId), datStream.toByteArray());
+                    files.add("book.dat");
                 }
             }
 
-            Manifest manifest = new Manifest(bookId, title, pageCount, props.getImageFormat(), files);
+            Manifest manifest = new Manifest(bookId, title, pageCount, props.getImageFormat(), files, mode, chunkMap, byteRanges);
             storage.writeManifest(manifest);
             storage.writeStatus(bookId, ProcessingStatus.READY);
             log.info("Book {} ready: {} pages", bookId, pageCount);

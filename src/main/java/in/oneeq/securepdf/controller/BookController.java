@@ -93,6 +93,38 @@ public class BookController {
         }
     }
 
+    /** 6. A chunk of encrypted pages (BATCHED mode). */
+    @GetMapping("/{bookId}/chunks/{chunkName}")
+    public ResponseEntity<byte[]> chunk(@PathVariable String bookId,
+                                       @PathVariable String chunkName) {
+        requireReady(bookId);
+        Path path = storage.chunkFile(bookId, chunkName);
+        if (!Files.exists(path)) {
+            throw notFound();
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(bytes);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Read failed", e);
+        }
+    }
+
+    /** 7. The entire encrypted book supporting Range requests (BYTE_RANGE mode). */
+    @GetMapping("/{bookId}/book.dat")
+    public ResponseEntity<org.springframework.core.io.Resource> bookDat(@PathVariable String bookId) {
+        requireReady(bookId);
+        Path path = storage.bookDatFile(bookId);
+        if (!Files.exists(path)) {
+            throw notFound();
+        }
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(new org.springframework.core.io.FileSystemResource(path));
+    }
+
     /**
      * The AES key, base64-encoded. THIS is the security-critical endpoint: a
      * real deployment enforces per-user entitlement and short-lived tokens here
