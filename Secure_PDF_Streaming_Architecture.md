@@ -244,3 +244,52 @@ This binary file contains nothing but a raw array of 32-bit integers (`Uint32`),
 2. **Reverse Engineering Friction:** Standard scrapers (like Python `requests` or `curl`) will choke on it. The attacker is forced to dig into your minified JavaScript, figure out how you unpack the `DataView` or `Uint32Array`, and calculate the byte offsets manually.
 
 The JavaScript viewer downloads `manifest.bin`, parses the array in microseconds, and mathematically reconstructs the byte boundaries (`start = previous_sizes_sum`, `end = start + current_size`) before making the `Range` request.
+
+## 13. Expanding to HTML & EPUB Streaming
+
+The Byte-Range architecture built for PDFs (which uses static images) is fully compatible with text-based formats like HTML and EPUB, but requires a different chunking strategy on the backend to avoid breaking the DOM.
+
+**The Problem with Blind HTML Slicing:**
+If you blindly split an HTML string by byte-count (e.g., 50,000 bytes per chunk), you risk slicing directly through an HTML tag (`<div cla` | `ss="container">`). When the frontend decrypts and injects this partial tag, the browser's DOM parser will break, corrupting the layout and CSS.
+
+**The Solution: Logical DOM Slicing (Section Tags)**
+Instead of slicing by raw bytes, the backend must use an HTML parser (like Jsoup) to split the document by logical DOM boundaries.
+
+The most robust approach is for the author (or the generation software) to manually structure the HTML using explicit `<section>` tags for each "page" or "chapter":
+
+```html
+<section id="chapter-1">
+  <h1>Introduction</h1>
+  <p>Content...</p>
+</section>
+<section id="chapter-2">
+  <p>More content...</p>
+</section>
+```
+
+**How the Architecture Handles Structured HTML:**
+1. **Parsing:** The backend parses the document and extracts the complete, unbroken `outerHTML` of each `<section>` tag.
+2. **Encryption:** It encrypts each `<section>` string individually using AES-GCM.
+3. **Concatenation:** It glues the encrypted sections together into a single `book.dat` file.
+4. **Manifest Mapping:** It records the exact byte size of each encrypted section in `manifest.bin`.
+5. **Seamless Frontend:** The JavaScript viewer fetches the requested chapter using a Byte-Range request, decrypts it into a pristine, unbroken HTML string, and safely injects it into the DOM. This perfectly mirrors how the standard EPUB `.zip` format structures books!
+
+## 14. True DRM: Preventing HTML DOM Theft & Watermarking
+
+When streaming HTML, the ultimate vulnerability is that the browser must inject the decrypted HTML into the DOM to render it, making it trivial for an attacker to press `F12`, open the Elements tab, and copy-paste the text.
+
+To achieve True DRM (Digital Rights Management) in the browser, you must prevent the decrypted text from ever touching the visible DOM.
+
+### 1. Canvas Rendering (DOM Evasion)
+Instead of injecting the decrypted string into the page (`element.innerHTML`), the viewer uses a process called Rasterization:
+1. **Hidden Staging:** The viewer injects the HTML into an invisible, off-screen `<div>` that the user cannot interact with.
+2. **Rasterization:** A library (like `html2canvas`) is used to literally take a "photo" of that off-screen `<div>`, converting the HTML into pixel data.
+3. **Canvas Display:** The resulting pixel data is painted onto an HTML5 `<canvas>` element on the user's screen, and the off-screen `<div>` is immediately destroyed. 
+
+If the user inspects the page, all they see is a `<canvas>` tag. The raw text is completely removed from the DOM, making scraping impossible.
+
+### 2. Forensic Watermarking (Anti-Screenshoting)
+If the user cannot scrape the text, their only fallback is to take screenshots. Forensic watermarking ensures screenshots are traceable.
+
+- **Visible Deterrent:** Using the Canvas API (`ctx.fillText()`), the viewer draws the user's unique Account ID (e.g., `User-59281`) diagonally across the canvas at 5% opacity. It is faint enough to ignore while reading, but permanently brands any screenshots they distribute.
+- **Invisible Steganography:** For covert tracking, the viewer uses `ctx.getImageData()` to manipulate the raw RGB arrays. It encodes the user's binary ID into the "Least Significant Bits" of the background pixels (e.g., shifting absolute white `#FFFFFF` to `#FEFFFF`). The human eye cannot detect the change, but if the screenshot is leaked, a decryption script can analyze the pixels, extract the ID, and instantly identify the leaker for account termination.
